@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#3584e4"/>
+      <stop offset="100%" stop-color="#1c71d8"/>
+    </linearGradient>
+    <linearGradient id="globeGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#e1f0ff"/>
+    </linearGradient>
+    <filter id="dropShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="28" ry="28" fill="url(#bgGradient)" filter="url(#dropShadow)"/>
+  <rect x="8" y="8" width="112" height="112" rx="28" ry="28" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-opacity="0.25"/>
+  <g transform="translate(20, 20)" fill="none" stroke="url(#globeGradient)" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="44" cy="44" r="32" stroke-width="6"/>
+    <line x1="12" y1="44" x2="76" y2="44" stroke-width="5"/>
+    <path d="M 16.5 28 Q 44 36 71.5 28" stroke-width="4.5"/>
+    <path d="M 16.5 60 Q 44 52 71.5 60" stroke-width="4.5"/>
+    <ellipse cx="44" cy="44" rx="16" ry="32" stroke-width="5"/>
+  </g>
+</svg>
+

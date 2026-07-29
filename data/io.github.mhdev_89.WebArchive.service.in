@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=io.github.mhdev_89.WebArchive
+Exec=@bindir@/webarchive --gapplication-service
