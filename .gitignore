@@ -1,0 +1,6 @@
+.flatpak-builder/
+build-dir/
+_build/
+*.flatpak
+.vscode/
+__pycache__/

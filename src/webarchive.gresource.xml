@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/io/github/mhdev_89/WebArchive">
+    <file preprocess="xml-stripblanks">bookmark-filled-symbolic.svg</file>
+  </gresource>
+</gresources>
