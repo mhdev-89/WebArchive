@@ -10,7 +10,7 @@
         "--socket=fallback-x11",
         "--device=dri",
         "--socket=wayland",
-        "--filesystem=home"],
+        "--filesystem=home/ZIMs"],
     "cleanup" : [
         "/include",
         "/lib/pkgconfig",

@@ -788,19 +788,6 @@ def setup_zim_uri_scheme():
     context = WebKit.WebContext.get_default()
     context.register_uri_scheme("zim", handle_zim_uri_scheme)
 
-def find_user_home_directories():
-    home_paths = set()
-    current_home = Path.home()
-    home_paths.add(current_home)
-    home_paths.add(current_home.resolve())
-    username = current_home.name
-    for potential_base in ["/home", "/var/home"]:
-        user_dir = Path(potential_base) / username
-        if user_dir.exists():
-            home_paths.add(user_dir)
-            home_paths.add(user_dir.resolve())
-    return list(home_paths)
-
 def _describe_download_error(exc):
     if isinstance(exc, urllib.error.HTTPError):
         return f"Server returned an error (HTTP {exc.code} {exc.reason})."
@@ -822,54 +809,39 @@ def _describe_download_error(exc):
 def invalidate_zim_scan_cache():
     _ZIM_SCAN_CACHE["scanned"] = False
 
+def _collect_zim_file_info(full_path):
+    try:
+        size_mb = full_path.stat().st_size / (1024 * 1024)
+        size_str = f"{size_mb / 1024:.2f} GB" if size_mb >= 1024 else f"{size_mb:.1f} MB"
+    except OSError:
+        size_str = "Unknown size"
+    title, gicon = get_zim_archive_metadata(str(full_path))
+    return {
+        "name": full_path.name,
+        "display_name": title,
+        "path": str(full_path),
+        "size": size_str,
+        "gicon": gicon,
+    }
+
 def scan_for_zim_files_background(callback, force=False):
     if _ZIM_SCAN_CACHE["scanned"] and not force:
         GLib.idle_add(callback, list(_ZIM_SCAN_CACHE["files"]))
         return
     def worker():
         zim_files = []
-        scanned_paths = set()
-        ignored_dirs = {
-            ".cache",
-            ".local",
-            ".var",
-            ".steam",
-            "node_modules",
-            ".git",
-            ".flatpak-builder",
-            "Trash",
-        }
-        for home_dir in find_user_home_directories():
-            if home_dir in scanned_paths or not home_dir.exists():
-                continue
-            scanned_paths.add(home_dir)
+
+        # This is the only place the app looks for ZIM files, and the only
+        # place it needs filesystem access to — matches --filesystem=~/ZIMs
+        # in the Flatpak manifest exactly.
+        if RECOMMENDED_ZIM_DIR.exists():
             try:
-                for root, dirs, files in os.walk(home_dir, followlinks=False):
-                    dirs[:] = [d for d in dirs if d not in ignored_dirs]
-                    for file in files:
-                        if file.lower().endswith(".zim"):
-                            full_path = Path(root) / file
-                            try:
-                                size_mb = full_path.stat().st_size / (1024 * 1024)
-                                size_str = (
-                                    f"{size_mb / 1024:.2f} GB"
-                                    if size_mb >= 1024
-                                    else f"{size_mb:.1f} MB"
-                                )
-                            except OSError:
-                                size_str = "Unknown size"
-                            title, gicon = get_zim_archive_metadata(str(full_path))
-                            zim_files.append(
-                                {
-                                    "name": file,
-                                    "display_name": title,
-                                    "path": str(full_path),
-                                    "size": size_str,
-                                    "gicon": gicon,
-                                }
-                            )
-            except PermissionError:
-                continue
+                for entry in sorted(RECOMMENDED_ZIM_DIR.iterdir()):
+                    if entry.is_file() and entry.suffix.lower() == ".zim":
+                        zim_files.append(_collect_zim_file_info(entry))
+            except OSError:
+                pass
+
         _ZIM_SCAN_CACHE["scanned"] = True
         _ZIM_SCAN_CACHE["files"] = zim_files
         GLib.idle_add(callback, zim_files)
@@ -901,34 +873,18 @@ class HomePageView(Gtk.ScrolledWindow):
         clamp.set_child(content_box)
         self.local_group = Adw.PreferencesGroup(title="Local Archives")
         header_buttons_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        tip_popover = Gtk.Popover()
-        tip_box = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL,
-            spacing=6,
-            margin_top=12,
-            margin_bottom=12,
-            margin_start=12,
-            margin_end=12,
-        )
-        tip_title = Gtk.Label(label="<b>Recommended Storage Folder</b>", use_markup=True)
-        tip_title.set_xalign(0)
-        tip_body = Gtk.Label(
-            label=f"Place your .zim files in:\n<b>{RECOMMENDED_ZIM_DIR}</b>\nor anywhere in your Home folder.",
-            use_markup=True,
-            wrap=True,
-        )
-        tip_body.set_xalign(0)
-        tip_box.append(tip_title)
-        tip_box.append(tip_body)
-        tip_popover.set_child(tip_box)
-        tip_button = Gtk.MenuButton(
-            icon_name="help-about-symbolic",
-            popover=tip_popover,
-            tooltip_text="Storage Info",
-        )
-        tip_button.add_css_class("flat")
-        tip_button.set_valign(Gtk.Align.CENTER)
-        header_buttons_box.append(tip_button)
+        self.info_button = Gtk.Button(icon_name="dialog-information-symbolic")
+        self.info_button.add_css_class("flat")
+        self.info_button.set_valign(Gtk.Align.CENTER)
+        self.info_button.set_tooltip_text("Where to put ZIM files")
+        self.info_button.connect("clicked", self.on_storage_info_clicked)
+        header_buttons_box.append(self.info_button)
+        self.open_folder_button = Gtk.Button(icon_name="folder-open-symbolic")
+        self.open_folder_button.add_css_class("flat")
+        self.open_folder_button.set_valign(Gtk.Align.CENTER)
+        self.open_folder_button.set_tooltip_text(f"Open {RECOMMENDED_ZIM_DIR}")
+        self.open_folder_button.connect("clicked", self.on_open_folder_clicked)
+        header_buttons_box.append(self.open_folder_button)
         self.reload_button = Gtk.Button(icon_name="view-refresh-symbolic")
         self.reload_button.add_css_class("flat")
         self.reload_button.set_valign(Gtk.Align.CENTER)
@@ -969,6 +925,27 @@ class HomePageView(Gtk.ScrolledWindow):
 
     def on_reload_clicked(self, button):
         self._start_scan(force=True)
+
+    def on_storage_info_clicked(self, button):
+        dialog = Adw.AlertDialog(
+            heading="Notice",
+            body=f"If you have any ZIM files put them in here :\n {RECOMMENDED_ZIM_DIR} \n The files downloaded from the Kiwix Library will automatically save there",
+        )
+        dialog.add_response("ok", "Got It")
+        dialog.set_default_response("ok")
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+
+        dialog.present(self.get_root())
+    def on_open_folder_clicked(self, button):
+        gfile = Gio.File.new_for_path(str(RECOMMENDED_ZIM_DIR))
+        launcher = Gtk.FileLauncher(file=gfile)
+        launcher.launch(self.get_root(), None, self._on_open_folder_done)
+
+    def _on_open_folder_done(self, launcher, result):
+        try:
+            launcher.launch_finish(result)
+        except GLib.Error as e:
+            print(f"Couldn't open {RECOMMENDED_ZIM_DIR}: {e}")
 
     def on_zim_scan_complete(self, zim_files):
         if self.loading_row is not None:
@@ -1018,7 +995,7 @@ class HomePageView(Gtk.ScrolledWindow):
         else:
             empty_row = Adw.ActionRow(
                 title="No .zim files found",
-                subtitle=f"Place .zim files in {RECOMMENDED_ZIM_DIR} or anywhere in Home.",
+                subtitle=f"Add .zim files to {RECOMMENDED_ZIM_DIR} — use the folder button above to open it.",
             )
             empty_row.add_prefix(Gtk.Image.new_from_icon_name("folder-symbolic"))
             self.local_group.add(empty_row)
