@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.10"
-# dependencies = [
-#    "requirements-parser<1.0.0,>=0.11.0",
-#    "packaging>=23.0",
-# ]
-# ///
-
 __license__ = "MIT"
 
 import sys

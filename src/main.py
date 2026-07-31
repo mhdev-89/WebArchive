@@ -15,6 +15,7 @@ gi.require_version("Adw", "1")
 gi.require_version("WebKit", "6.0")
 gi.require_version("Pango", "1.0")
 from gi.repository import Gtk, Adw, Gio, GLib, GObject, Pango, WebKit, Gdk
+
 icon_theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
 icon_theme.add_resource_path("/io/github/mhdev_89/WebArchive")
 
@@ -28,20 +29,17 @@ _OPEN_ARCHIVES = {}
 BOOKMARKS = {}
 HISTORY = {}
 HISTORY_MAX_ENTRIES = 100
+
 _ZIM_SCAN_CACHE = {"scanned": False, "files": []}
 
-# Under Flatpak this resolves to the app's own sandboxed data directory
-# (~/.var/app/io.github.mhdev_89.WebArchive/data), which is where anything
-# the app should "remember" across launches belongs. Outside Flatpak it
-# falls back to XDG_DATA_HOME, so a subfolder keeps it from mixing with
-# other apps' files.
 _APP_DATA_DIR = Path(GLib.get_user_data_dir()) / "io.github.mhdev_89.WebArchive"
 _APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
 STATE_FILE = _APP_DATA_DIR / "library-state.json"
+
 _save_state = {"scheduled": False}
 
+
 def load_persisted_state():
-    """Load bookmarks and history saved from a previous run, if any."""
     if not STATE_FILE.exists():
         return
     try:
@@ -52,6 +50,7 @@ def load_persisted_state():
             HISTORY[zim_path] = [(u, t) for u, t in entries]
     except (OSError, json.JSONDecodeError, ValueError) as e:
         print(f"Could not load saved library state: {e}")
+
 
 def _write_persisted_state():
     try:
@@ -66,8 +65,8 @@ def _write_persisted_state():
     except OSError as e:
         print(f"Could not save library state: {e}")
 
+
 def schedule_state_save():
-    """Debounce saves so rapid bookmark/history changes don't hit disk repeatedly."""
     if _save_state["scheduled"]:
         return
     _save_state["scheduled"] = True
@@ -79,14 +78,17 @@ def schedule_state_save():
 
     GLib.timeout_add(500, _do_save)
 
+
 try:
     from libzim.reader import Archive
     from libzim.search import Query, Searcher
 except ImportError:
     pass
 
+
 def is_bookmarked(zim_path, uri):
     return zim_path in BOOKMARKS and uri in BOOKMARKS[zim_path]
+
 
 def toggle_bookmark(zim_path, uri, title):
     if zim_path not in BOOKMARKS:
@@ -100,8 +102,10 @@ def toggle_bookmark(zim_path, uri, title):
         schedule_state_save()
         return True
 
+
 def get_bookmarks(zim_path):
     return BOOKMARKS.get(zim_path, {})
+
 
 def add_history_entry(zim_path, uri, title):
     if not zim_path or not uri:
@@ -111,6 +115,7 @@ def add_history_entry(zim_path, uri, title):
     entries.insert(0, (uri, title or uri))
     del entries[HISTORY_MAX_ENTRIES:]
     schedule_state_save()
+
 
 def update_history_title(zim_path, uri, title):
     entries = HISTORY.get(zim_path)
@@ -122,21 +127,26 @@ def update_history_title(zim_path, uri, title):
             schedule_state_save()
             break
 
+
 def remove_history_entry(zim_path, uri):
     entries = HISTORY.get(zim_path)
     if entries:
         entries[:] = [(u, t) for (u, t) in entries if u != uri]
         schedule_state_save()
 
+
 def get_history(zim_path):
     return HISTORY.get(zim_path, [])
+
 
 def clear_history(zim_path):
     HISTORY[zim_path] = []
     schedule_state_save()
 
+
 KIWIX_LIBRARY_BASE = "https://library.kiwix.org"
 KIWIX_ENTRIES_ENDPOINT = f"{KIWIX_LIBRARY_BASE}/catalog/v2/entries"
+
 KIWIX_CATEGORIES = [
     ("", "Any Category"),
     ("wikipedia", "Wikipedia"),
@@ -155,6 +165,7 @@ KIWIX_CATEGORIES = [
     ("stack_exchange", "Stack Exchange"),
     ("other", "Other"),
 ]
+
 KIWIX_LANGUAGES = [
     ("", "Any Language"),
     ("eng", "English"),
@@ -187,8 +198,10 @@ KIWIX_LANGUAGES = [
     ("hau", "Hausa"),
 ]
 
+
 def _xml_local_tag(tag):
     return tag.split("}", 1)[-1] if "}" in tag else tag
+
 
 def format_byte_size(num_bytes):
     if not num_bytes:
@@ -200,6 +213,7 @@ def format_byte_size(num_bytes):
         size /= 1024
     return "Unknown size"
 
+
 def fetch_kiwix_catalog(query_text="", language="", category="", count=40):
     params = {"count": str(count)}
     if query_text:
@@ -208,15 +222,20 @@ def fetch_kiwix_catalog(query_text="", language="", category="", count=40):
         params["lang"] = language
     if category:
         params["category"] = category
+
     url = KIWIX_ENTRIES_ENDPOINT + "?" + urllib.parse.urlencode(params)
     request = urllib.request.Request(url, headers={"User-Agent": "WebArchivesGtk/1.0"})
+
     with urllib.request.urlopen(request, timeout=15) as response:
         data = response.read()
+
     root = ET.fromstring(data)
     entries = []
+
     for child in root:
         if _xml_local_tag(child.tag) != "entry":
             continue
+
         info = {
             "title": "Untitled",
             "summary": "",
@@ -226,6 +245,7 @@ def fetch_kiwix_catalog(query_text="", language="", category="", count=40):
             "icon_url": None,
             "download_url": None,
         }
+
         for field in child:
             tag = _xml_local_tag(field.tag)
             if tag == "title":
@@ -241,9 +261,12 @@ def fetch_kiwix_catalog(query_text="", language="", category="", count=40):
                 type_attr = field.get("type", "") or ""
                 href = field.get("href", "") or ""
                 length = field.get("length")
+
                 if not href:
                     continue
+
                 full_href = urllib.parse.urljoin(KIWIX_LIBRARY_BASE + "/", href)
+
                 if type_attr.startswith("image/") and info["icon_url"] is None:
                     info["icon_url"] = full_href
                 elif (
@@ -257,8 +280,11 @@ def fetch_kiwix_catalog(query_text="", language="", category="", count=40):
                             info["size_bytes"] = int(length)
                         except ValueError:
                             pass
+
         entries.append(info)
+
     return entries
+
 
 class KiwixLibraryDialog(Adw.Dialog):
     def __init__(self):
@@ -267,7 +293,6 @@ class KiwixLibraryDialog(Adw.Dialog):
         self.set_content_height(760)
         self.set_title("Kiwix Library")
 
-        # Esc Key Controller to Close Dialog
         key_controller = Gtk.EventControllerKey()
         key_controller.connect("key-pressed", self._on_key_pressed)
         self.add_controller(key_controller)
@@ -278,66 +303,80 @@ class KiwixLibraryDialog(Adw.Dialog):
             Adw.WindowTitle(title="Kiwix Library", subtitle="browse.library.kiwix.org")
         )
         toolbar_view.add_top_bar(header_bar)
+
         root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         controls.set_margin_top(12)
         controls.set_margin_bottom(12)
         controls.set_margin_start(12)
         controls.set_margin_end(12)
+
         self.search_entry = Gtk.SearchEntry()
         self.search_entry.set_hexpand(True)
         self.search_entry.set_placeholder_text("Search ZIM files… (e.g. Wikipedia, TED)")
         self.search_entry.connect("activate", self._on_search_activate)
         controls.append(self.search_entry)
+
         self.language_dropdown = Gtk.DropDown(
             model=Gtk.StringList.new([label for _code, label in KIWIX_LANGUAGES])
         )
         self.language_dropdown.set_tooltip_text("Language")
         controls.append(self.language_dropdown)
+
         self.category_dropdown = Gtk.DropDown(
             model=Gtk.StringList.new([label for _code, label in KIWIX_CATEGORIES])
         )
         self.category_dropdown.set_tooltip_text("Category")
         controls.append(self.category_dropdown)
+
         search_button = Gtk.Button(label="Search")
         search_button.add_css_class("suggested-action")
         search_button.connect("clicked", self._on_search_activate)
         controls.append(search_button)
+
         root_box.append(controls)
         root_box.append(Gtk.Separator())
+
         self.stack = Gtk.Stack()
         self.stack.set_vexpand(True)
         root_box.append(self.stack)
+
         self.prompt_status = Adw.StatusPage(
             title="Browse the Kiwix Library",
             description="Search for a topic, or just hit Search to see what's available.",
             icon_name="network-server-symbolic",
         )
         self.stack.add_named(self.prompt_status, "prompt")
+
         loading_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         loading_box.set_halign(Gtk.Align.CENTER)
         loading_box.set_valign(Gtk.Align.CENTER)
         loading_box.set_vexpand(True)
+
         spinner = Gtk.Spinner()
         spinner.set_size_request(32, 32)
         spinner.start()
         loading_box.append(spinner)
         loading_box.append(Gtk.Label(label="Searching the Kiwix library…"))
         self.stack.add_named(loading_box, "loading")
+
         self.error_status = Adw.StatusPage(
             title="Couldn't Reach the Library",
             description="Check your internet connection and try again.",
             icon_name="network-offline-symbolic",
         )
         self.stack.add_named(self.error_status, "error")
+
         self.empty_status = Adw.StatusPage(
             title="No Results",
             description="Try a different search term or filter.",
             icon_name="edit-find-symbolic",
         )
         self.stack.add_named(self.empty_status, "empty")
+
         results_scroll = Gtk.ScrolledWindow()
         results_scroll.set_vexpand(True)
+
         self.flow_box = Gtk.FlowBox()
         self.flow_box.set_valign(Gtk.Align.START)
         self.flow_box.set_max_children_per_line(3)
@@ -350,8 +389,10 @@ class KiwixLibraryDialog(Adw.Dialog):
         self.flow_box.set_margin_bottom(12)
         self.flow_box.set_margin_start(12)
         self.flow_box.set_margin_end(12)
+
         results_scroll.set_child(self.flow_box)
         self.stack.add_named(results_scroll, "results")
+
         self.stack.set_visible_child_name("prompt")
         toolbar_view.set_content(root_box)
         self.set_child(toolbar_view)
@@ -372,7 +413,9 @@ class KiwixLibraryDialog(Adw.Dialog):
         query_text = self.search_entry.get_text().strip()
         language_code = self._selected_code(self.language_dropdown, KIWIX_LANGUAGES)
         category_code = self._selected_code(self.category_dropdown, KIWIX_CATEGORIES)
+
         self.stack.set_visible_child_name("loading")
+
         def worker():
             try:
                 entries = fetch_kiwix_catalog(
@@ -384,6 +427,7 @@ class KiwixLibraryDialog(Adw.Dialog):
                 GLib.idle_add(self._on_search_error, str(exc))
                 return
             GLib.idle_add(self._on_search_results, entries)
+
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_search_error(self, message):
@@ -396,9 +440,11 @@ class KiwixLibraryDialog(Adw.Dialog):
             next_child = child.get_next_sibling()
             self.flow_box.remove(child)
             child = next_child
+
         if not entries:
             self.stack.set_visible_child_name("empty")
             return
+
         for entry in entries:
             self.flow_box.append(self._build_result_card(entry))
         self.stack.set_visible_child_name("results")
@@ -410,18 +456,23 @@ class KiwixLibraryDialog(Adw.Dialog):
             icon_name="dialog-error-symbolic",
         )
         status.set_vexpand(True)
+
         header = Adw.HeaderBar()
         header.set_show_end_title_buttons(False)
+
         ok_button = Gtk.Button(label="OK")
         ok_button.add_css_class("suggested-action")
         header.pack_end(ok_button)
+
         toolbar_view = Adw.ToolbarView()
         toolbar_view.add_top_bar(header)
         toolbar_view.set_content(status)
+
         error_dialog = Adw.Dialog()
         error_dialog.set_content_width(420)
         error_dialog.set_content_height(280)
         error_dialog.set_child(toolbar_view)
+
         ok_button.connect("clicked", lambda b: error_dialog.close())
         error_dialog.present(self)
 
@@ -490,13 +541,19 @@ class KiwixLibraryDialog(Adw.Dialog):
             progress_bar.set_visible(False)
             inner.append(progress_bar)
 
-            # A file may exist on disk but be a leftover from a failed/interrupted
-            # download, so don't just trust its presence — verify its size against
-            # what the catalog says it should be before treating it as complete.
             expected_size = entry.get("size_bytes")
-            existing_is_complete = target_path.exists() and (
-                not expected_size or target_path.stat().st_size == expected_size
-            )
+
+            def check_is_complete(path, expected):
+                if not path.exists():
+                    return False
+                actual = path.stat().st_size
+                if actual == 0:
+                    return False
+                if not expected:
+                    return True
+                return abs(actual - expected) < max(4096, expected * 0.01)
+
+            existing_is_complete = check_is_complete(target_path, expected_size)
 
             if existing_is_complete:
                 download_btn = Gtk.Button(icon_name="checkbox-checked-symbolic")
@@ -520,14 +577,7 @@ class KiwixLibraryDialog(Adw.Dialog):
                     progress_bar.set_visible(True)
                     progress_bar.set_fraction(0.0)
                     progress_bar.set_text("Connecting…")
-
-                    # DNS lookup + TCP/TLS handshake + waiting on response headers can
-                    # take a few seconds before any bytes arrive. Pulse immediately so
-                    # the button doesn't look stuck during that gap; real progress
-                    # updates take over (and stop this) once transfer actually starts.
-                    pulse_state = {
-                        "source_id": GLib.timeout_add(100, lambda: progress_bar.pulse() is None)
-                    }
+                    pulse_state = {"source_id": GLib.timeout_add(100, lambda: progress_bar.pulse() is None)}
 
                     def stop_connecting_pulse():
                         if pulse_state["source_id"] is not None:
@@ -570,17 +620,14 @@ class KiwixLibraryDialog(Adw.Dialog):
                             req = urllib.request.Request(
                                 url, headers={"User-Agent": "WebArchivesGtk/1.0"}
                             )
-                            # timeout guards against a stalled connection hanging
-                            # forever with no progress and no error ever reported.
                             with urllib.request.urlopen(req, timeout=30) as resp:
-                                # Headers are in — the slow "connecting" part is done,
-                                # so switch off the indeterminate pulse in favor of
-                                # real progress.
                                 GLib.idle_add(stop_connecting_pulse)
-                                total_size = resp.headers.get("Content-Length")
-                                total_size = int(total_size) if total_size else entry.get("size_bytes") or 0
+                                content_len = resp.headers.get("Content-Length")
+                                server_size = int(content_len) if content_len else None
+                                total_size = server_size or entry.get("size_bytes") or 0
+
                                 downloaded = 0
-                                block_size = 262144  # 256 KB
+                                block_size = 262144
                                 last_ui_update = 0.0
 
                                 with open(tmp_path, "wb") as f:
@@ -590,17 +637,17 @@ class KiwixLibraryDialog(Adw.Dialog):
                                             break
                                         downloaded += len(buffer)
                                         f.write(buffer)
-                                        # Throttle UI updates (~5/sec) instead of firing
-                                        # idle_add on every chunk, which can flood the
-                                        # main loop on multi-GB files.
                                         now = time.monotonic()
                                         if now - last_ui_update > 0.2:
                                             last_ui_update = now
                                             GLib.idle_add(update_progress, downloaded, total_size)
 
-                            if total_size and downloaded != total_size:
+                            if downloaded == 0:
+                                raise IOError("Downloaded file is empty.")
+
+                            if server_size and downloaded < server_size:
                                 raise IOError(
-                                    f"Incomplete download: got {downloaded} of {total_size} bytes"
+                                    f"Incomplete download: got {downloaded} of {server_size} bytes"
                                 )
 
                             os.replace(tmp_path, target_path)
@@ -619,11 +666,9 @@ class KiwixLibraryDialog(Adw.Dialog):
                 footer_row.append(download_btn)
 
         inner.append(footer_row)
-
         icon_url = entry.get("icon_url")
         if icon_url:
             self._load_card_icon(icon_url, icon_image)
-
         return card
 
     def _load_card_icon(self, url, image_widget):
@@ -635,6 +680,7 @@ class KiwixLibraryDialog(Adw.Dialog):
             except Exception:
                 return
             GLib.idle_add(self._apply_card_icon, image_widget, data)
+
         threading.Thread(target=worker, daemon=True).start()
 
     def _apply_card_icon(self, image_widget, data):
@@ -645,14 +691,17 @@ class KiwixLibraryDialog(Adw.Dialog):
         except Exception:
             pass
 
+
 def register_zim_archive(path):
     archive = Archive(path)
     archive_id = uuid.uuid4().hex
     _OPEN_ARCHIVES[archive_id] = archive
     return archive_id, archive
 
+
 def zim_display_name(path):
     return Path(path).stem
+
 
 def get_zim_archive_metadata(path):
     title = zim_display_name(path)
@@ -673,6 +722,7 @@ def get_zim_archive_metadata(path):
                         title = m_title
             except Exception:
                 pass
+
         try:
             illustration = archive.get_illustration_item(48)
             content = bytes(illustration.content)
@@ -682,6 +732,7 @@ def get_zim_archive_metadata(path):
     except Exception:
         pass
     return title, gicon
+
 
 def get_full_zim_details(path):
     details = {
@@ -708,10 +759,12 @@ def get_full_zim_details(path):
             details["size"] = (
                 f"{size_mb / 1024:.1f} GB" if size_mb >= 1024 else f"{size_mb:.1f} MB"
             )
+
         archive = Archive(path)
         details["id"] = str(getattr(archive, "uuid", "N/A"))
         details["article_count"] = str(getattr(archive, "article_count", "N/A"))
         details["media_count"] = str(getattr(archive, "media_count", "N/A"))
+
         def read_meta(key):
             try:
                 val = archive.get_metadata(key)
@@ -720,30 +773,39 @@ def get_full_zim_details(path):
                 return val.strip() if val and val.strip() else None
             except Exception:
                 return None
+
         title = read_meta("Title")
         if title:
             details["title"] = title
+
         date = read_meta("Date")
         if date:
             details["date"] = date
+
         lang = read_meta("Language") or read_meta("lang")
         if lang:
             details["lang"] = lang
+
         desc = read_meta("Description")
         if desc:
             details["description"] = desc
+
         creator = read_meta("Creator")
         if creator:
             details["creator"] = creator
+
         publisher = read_meta("Publisher")
         if publisher:
             details["publisher"] = publisher
+
         tags = read_meta("Tags") or read_meta("Keywords")
         if tags:
             details["tags"] = tags.replace(";", " • ")
+
         name = read_meta("Name")
         if name:
             details["name"] = name
+
         try:
             illustration = archive.get_illustration_item(48)
             content = bytes(illustration.content)
@@ -754,39 +816,48 @@ def get_full_zim_details(path):
         pass
     return details
 
+
 def _make_glib_error(message):
     return GLib.Error.new_literal(GLib.quark_from_string("zim-scheme"), message, 0)
+
 
 def _zim_uri_entry_path(uri):
     parsed = urllib.parse.urlparse(uri)
     return urllib.parse.unquote(parsed.path.lstrip("/"))
+
 
 def handle_zim_uri_scheme(request):
     uri = request.get_uri()
     parsed = urllib.parse.urlparse(uri)
     archive_id = parsed.netloc
     entry_path = _zim_uri_entry_path(uri)
+
     archive = _OPEN_ARCHIVES.get(archive_id)
     if archive is None:
         request.finish_error(_make_glib_error("Archive is not open"))
         return
+
     try:
         if entry_path:
             entry = archive.get_entry_by_path(entry_path)
         else:
             entry = archive.main_entry
+
         item = entry.get_item()
         content = bytes(item.content)
         mime_type = item.mimetype
+
         gbytes = GLib.Bytes.new(content)
         stream = Gio.MemoryInputStream.new_from_bytes(gbytes)
         request.finish(stream, len(content), mime_type)
     except Exception as exc:
         request.finish_error(_make_glib_error(str(exc)))
 
+
 def setup_zim_uri_scheme():
     context = WebKit.WebContext.get_default()
     context.register_uri_scheme("zim", handle_zim_uri_scheme)
+
 
 def _describe_download_error(exc):
     if isinstance(exc, urllib.error.HTTPError):
@@ -806,8 +877,10 @@ def _describe_download_error(exc):
         return f"A file system error occurred: {exc}"
     return str(exc)
 
+
 def invalidate_zim_scan_cache():
     _ZIM_SCAN_CACHE["scanned"] = False
+
 
 def _collect_zim_file_info(full_path):
     try:
@@ -815,6 +888,7 @@ def _collect_zim_file_info(full_path):
         size_str = f"{size_mb / 1024:.2f} GB" if size_mb >= 1024 else f"{size_mb:.1f} MB"
     except OSError:
         size_str = "Unknown size"
+
     title, gicon = get_zim_archive_metadata(str(full_path))
     return {
         "name": full_path.name,
@@ -824,16 +898,14 @@ def _collect_zim_file_info(full_path):
         "gicon": gicon,
     }
 
+
 def scan_for_zim_files_background(callback, force=False):
     if _ZIM_SCAN_CACHE["scanned"] and not force:
         GLib.idle_add(callback, list(_ZIM_SCAN_CACHE["files"]))
         return
+
     def worker():
         zim_files = []
-
-        # This is the only place the app looks for ZIM files, and the only
-        # place it needs filesystem access to — matches --filesystem=~/ZIMs
-        # in the Flatpak manifest exactly.
         if RECOMMENDED_ZIM_DIR.exists():
             try:
                 for entry in sorted(RECOMMENDED_ZIM_DIR.iterdir()):
@@ -845,7 +917,9 @@ def scan_for_zim_files_background(callback, force=False):
         _ZIM_SCAN_CACHE["scanned"] = True
         _ZIM_SCAN_CACHE["files"] = zim_files
         GLib.idle_add(callback, zim_files)
+
     threading.Thread(target=worker, daemon=True).start()
+
 
 class HomePageView(Gtk.ScrolledWindow):
     __gsignals__ = {
@@ -854,13 +928,16 @@ class HomePageView(Gtk.ScrolledWindow):
         "bookmarks-clicked": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "search-clicked": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
     }
+
     def __init__(self):
         super().__init__()
         self.set_vexpand(True)
         self.set_hexpand(True)
+
         self._file_rows = []
         self.loading_row = None
         self.spinner = None
+
         clamp = Adw.Clamp(
             maximum_size=650,
             margin_top=24,
@@ -869,30 +946,38 @@ class HomePageView(Gtk.ScrolledWindow):
             margin_end=16,
         )
         self.set_child(clamp)
+
         content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         clamp.set_child(content_box)
+
         self.local_group = Adw.PreferencesGroup(title="Local Archives")
+
         header_buttons_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+
         self.info_button = Gtk.Button(icon_name="dialog-information-symbolic")
         self.info_button.add_css_class("flat")
         self.info_button.set_valign(Gtk.Align.CENTER)
         self.info_button.set_tooltip_text("Where to put ZIM files")
         self.info_button.connect("clicked", self.on_storage_info_clicked)
         header_buttons_box.append(self.info_button)
+
         self.open_folder_button = Gtk.Button(icon_name="folder-open-symbolic")
         self.open_folder_button.add_css_class("flat")
         self.open_folder_button.set_valign(Gtk.Align.CENTER)
         self.open_folder_button.set_tooltip_text(f"Open {RECOMMENDED_ZIM_DIR}")
         self.open_folder_button.connect("clicked", self.on_open_folder_clicked)
         header_buttons_box.append(self.open_folder_button)
+
         self.reload_button = Gtk.Button(icon_name="view-refresh-symbolic")
         self.reload_button.add_css_class("flat")
         self.reload_button.set_valign(Gtk.Align.CENTER)
         self.reload_button.set_tooltip_text("Reload ZIM files")
         self.reload_button.connect("clicked", self.on_reload_clicked)
         header_buttons_box.append(self.reload_button)
+
         self.local_group.set_header_suffix(header_buttons_box)
         content_box.append(self.local_group)
+
         remote_group = Adw.PreferencesGroup(
             title="Remote Archives",
             description="Online ZIM repositories and mirrors.",
@@ -905,6 +990,7 @@ class HomePageView(Gtk.ScrolledWindow):
         remote_row.set_activatable(True)
         remote_row.connect("activated", self._on_remote_row_activated)
         remote_group.add(remote_row)
+
         content_box.append(remote_group)
         self._start_scan(force=False)
 
@@ -916,6 +1002,7 @@ class HomePageView(Gtk.ScrolledWindow):
         self.loading_row.add_suffix(self.spinner)
         self.local_group.add(self.loading_row)
         self.reload_button.set_sensitive(False)
+
         scan_for_zim_files_background(self.on_zim_scan_complete, force=force)
 
     def _clear_file_rows(self):
@@ -934,8 +1021,8 @@ class HomePageView(Gtk.ScrolledWindow):
         dialog.add_response("ok", "Got It")
         dialog.set_default_response("ok")
         dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
-
         dialog.present(self.get_root())
+
     def on_open_folder_clicked(self, button):
         gfile = Gio.File.new_for_path(str(RECOMMENDED_ZIM_DIR))
         launcher = Gtk.FileLauncher(file=gfile)
@@ -952,11 +1039,14 @@ class HomePageView(Gtk.ScrolledWindow):
             self.local_group.remove(self.loading_row)
             self.loading_row = None
             self.spinner = None
+
         self.reload_button.set_sensitive(True)
         self._clear_file_rows()
+
         if zim_files:
             for zim in zim_files:
                 row = Adw.ActionRow(title=zim["display_name"], subtitle=zim["size"])
+
                 gicon = zim.get("gicon")
                 if gicon is not None:
                     favicon_image = Gtk.Image.new_from_gicon(gicon)
@@ -964,32 +1054,38 @@ class HomePageView(Gtk.ScrolledWindow):
                     row.add_prefix(favicon_image)
                 else:
                     row.add_prefix(Gtk.Image.new_from_icon_name("book-open-symbolic"))
+
                 row.set_activatable(True)
                 row.connect("activated", self._on_zim_row_activated, zim["path"])
+
                 hist_btn = Gtk.Button(icon_name="document-open-recent-symbolic")
                 hist_btn.add_css_class("flat")
                 hist_btn.set_valign(Gtk.Align.CENTER)
                 hist_btn.set_tooltip_text("History")
                 hist_btn.connect("clicked", lambda b, p=zim["path"]: self.emit("history-clicked", p))
                 row.add_suffix(hist_btn)
+
                 bookmark_btn = Gtk.Button(icon_name=BOOKMARK_ICON_OUTLINE)
                 bookmark_btn.add_css_class("flat")
                 bookmark_btn.set_valign(Gtk.Align.CENTER)
                 bookmark_btn.set_tooltip_text("Bookmarks")
                 bookmark_btn.connect("clicked", lambda b, p=zim["path"]: self.emit("bookmarks-clicked", p))
                 row.add_suffix(bookmark_btn)
+
                 search_btn = Gtk.Button(icon_name="system-search-symbolic")
                 search_btn.add_css_class("flat")
                 search_btn.set_valign(Gtk.Align.CENTER)
                 search_btn.set_tooltip_text("Search Articles")
                 search_btn.connect("clicked", lambda b, p=zim["path"]: self.emit("search-clicked", p))
                 row.add_suffix(search_btn)
+
                 info_button = Gtk.Button(icon_name="view-more-symbolic")
                 info_button.add_css_class("flat")
                 info_button.set_valign(Gtk.Align.CENTER)
                 info_button.set_tooltip_text("File details")
                 info_button.connect("clicked", self._on_zim_info_clicked, zim)
                 row.add_suffix(info_button)
+
                 self.local_group.add(row)
                 self._file_rows.append(row)
         else:
@@ -1003,18 +1099,20 @@ class HomePageView(Gtk.ScrolledWindow):
 
     def _on_zim_info_clicked(self, button, zim):
         details = get_full_zim_details(zim["path"])
+
         dialog = Adw.Dialog()
         dialog.set_content_width(520)
         dialog.set_content_height(720)
+
         toolbar_view = Adw.ToolbarView()
         header_bar = Adw.HeaderBar()
-        title_widget = Adw.WindowTitle(
-            title="Details", subtitle=details["title"]
-        )
+        title_widget = Adw.WindowTitle(title="Details", subtitle=details["title"])
         header_bar.set_title_widget(title_widget)
         toolbar_view.add_top_bar(header_bar)
+
         scroll = Gtk.ScrolledWindow()
         scroll.set_vexpand(True)
+
         content_grid = Gtk.Grid()
         content_grid.set_column_spacing(20)
         content_grid.set_row_spacing(12)
@@ -1023,7 +1121,9 @@ class HomePageView(Gtk.ScrolledWindow):
         content_grid.set_margin_start(24)
         content_grid.set_margin_end(24)
         content_grid.set_halign(Gtk.Align.CENTER)
+
         row_idx = 0
+
         def add_detail_row(label_text, widget):
             nonlocal row_idx
             lbl = Gtk.Label(label=label_text)
@@ -1031,10 +1131,12 @@ class HomePageView(Gtk.ScrolledWindow):
             lbl.set_valign(Gtk.Align.CENTER)
             lbl.add_css_class("dim-label")
             content_grid.attach(lbl, 0, row_idx, 1, 1)
+
             widget.set_halign(Gtk.Align.START)
             widget.set_valign(Gtk.Align.CENTER)
             content_grid.attach(widget, 1, row_idx, 1, 1)
             row_idx += 1
+
         if details["gicon"]:
             icon_img = Gtk.Image.new_from_gicon(details["gicon"])
             icon_img.set_pixel_size(48)
@@ -1043,17 +1145,20 @@ class HomePageView(Gtk.ScrolledWindow):
             icon_img = Gtk.Image.new_from_icon_name("book-open-symbolic")
             icon_img.set_pixel_size(48)
             add_detail_row("Favicon", icon_img)
+
         title_label = Gtk.Label(label=details["title"], wrap=True, max_width_chars=35)
         title_label.set_xalign(0)
         add_detail_row("Title", title_label)
+
         location_label = Gtk.Label(
-            label=f"<a href=\"file://{details['location']}\">{details['location']}</a>",
+            label=f'<a href="file://{details["location"]}">{details["location"]}</a>',
             use_markup=True,
             wrap=True,
             max_width_chars=35,
         )
         location_label.set_xalign(0)
         add_detail_row("Location", location_label)
+
         fields = [
             ("Date", details["date"]),
             ("Lang", details["lang"]),
@@ -1067,10 +1172,12 @@ class HomePageView(Gtk.ScrolledWindow):
             ("Publisher", details["publisher"]),
             ("Tags", details["tags"]),
         ]
+
         for caption, val in fields:
             val_label = Gtk.Label(label=val, wrap=True, selectable=True, max_width_chars=35)
             val_label.set_xalign(0)
             add_detail_row(caption, val_label)
+
         scroll.set_child(content_grid)
         toolbar_view.set_content(scroll)
         dialog.set_child(toolbar_view)
@@ -1083,57 +1190,72 @@ class HomePageView(Gtk.ScrolledWindow):
         dialog = KiwixLibraryDialog()
         dialog.present(self.get_root())
 
+
 class ZimPageView(Gtk.Overlay):
     def __init__(self, zim_path, window_ref, target_uri=""):
         super().__init__()
         self.zim_path = zim_path
         self.window_ref = window_ref
+
         title, icon = get_zim_archive_metadata(zim_path)
         self.title = title
         self.icon = icon
+
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+
         self.search_bar = Gtk.SearchBar()
         search_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         search_box.set_margin_top(4)
         search_box.set_margin_bottom(4)
         search_box.set_margin_start(8)
         search_box.set_margin_end(8)
+
         self.search_entry = Gtk.SearchEntry()
         self.search_entry.set_hexpand(True)
         self.search_entry.set_placeholder_text("Find in page…")
         search_box.append(self.search_entry)
+
         btn_prev = Gtk.Button(icon_name="go-up-symbolic")
         btn_prev.set_tooltip_text("Previous occurrence")
         btn_prev.connect("clicked", lambda *_: self.find_previous())
         search_box.append(btn_prev)
+
         btn_next = Gtk.Button(icon_name="go-down-symbolic")
         btn_next.set_tooltip_text("Next occurrence")
         btn_next.connect("clicked", lambda *_: self.find_next())
         search_box.append(btn_next)
+
         btn_close = Gtk.Button(icon_name="window-close-symbolic")
         btn_close.add_css_class("flat")
         btn_close.set_tooltip_text("Close search bar")
         btn_close.connect("clicked", lambda *_: self.hide_search_bar())
         search_box.append(btn_close)
+
         self.search_bar.set_child(search_box)
         self.search_bar.connect_entry(self.search_entry)
         main_box.append(self.search_bar)
+
         self.webview = WebKit.WebView()
         self.webview.set_vexpand(True)
         self.webview.set_hexpand(True)
+
         self.find_controller = self.webview.get_find_controller()
         self.search_entry.connect("search-changed", self._on_find_text_changed)
         self.search_entry.connect("activate", lambda *_: self.find_next())
+
         self.archive_id = None
         self.archive = None
         self.initial_load_done = False
+
         self.webview.connect("context-menu", self._on_context_menu)
         self._last_hit_test_result = None
         self.webview.connect("mouse-target-changed", self._on_mouse_target_changed)
+
         gesture = Gtk.GestureClick.new()
         gesture.set_button(2)
         gesture.connect("pressed", self._on_middle_click)
         self.webview.add_controller(gesture)
+
         try:
             archive_id, archive = register_zim_archive(zim_path)
             self.archive_id = archive_id
@@ -1143,6 +1265,7 @@ class ZimPageView(Gtk.Overlay):
         except Exception as exc:
             self._show_error(str(exc))
             return
+
         main_box.append(self.webview)
         self.set_child(main_box)
 
@@ -1178,15 +1301,18 @@ class ZimPageView(Gtk.Overlay):
         if hit_test_result.context_is_link():
             uri = hit_test_result.get_link_uri()
             context_menu.remove_all()
+
             item_open = WebKit.ContextMenuItem.new_from_gaction(
                 Gio.SimpleAction.new("open-link", None), "Open Link", None
             )
             item_open.get_gaction().connect(
-                "activate", lambda *_: self.window_ref.on_open_zim_file(
+                "activate",
+                lambda *_: self.window_ref.on_open_zim_file(
                     None, self.zim_path, target_uri=uri, new_tab=False
-                )
+                ),
             )
             context_menu.append(item_open)
+
             item_new_tab = WebKit.ContextMenuItem.new_from_gaction(
                 Gio.SimpleAction.new("open-link-tab", None), "Open Link in New Tab", None
             )
@@ -1197,12 +1323,15 @@ class ZimPageView(Gtk.Overlay):
                 ),
             )
             context_menu.append(item_new_tab)
+
             item_copy = WebKit.ContextMenuItem.new_from_gaction(
                 Gio.SimpleAction.new("copy-link", None), "Copy Link Location", None
             )
+
             def copy_uri(*_):
                 clipboard = self.get_clipboard()
                 clipboard.set(uri)
+
             item_copy.get_gaction().connect("activate", copy_uri)
             context_menu.append(item_copy)
             return False
@@ -1230,35 +1359,44 @@ class ZimPageView(Gtk.Overlay):
         )
         self.append(status)
 
+
 class WebArchivesWindow(Adw.ApplicationWindow):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.set_default_size(800, 600)
         self.set_title("Web Archives")
+
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.set_content(main_box)
+
         header_bar = Adw.HeaderBar()
         main_box.append(header_bar)
+
         title_widget = Adw.WindowTitle(title="Web Archives")
         header_bar.set_title_widget(title_widget)
+
         self.home_button = Gtk.Button(
             icon_name="go-home-symbolic", tooltip_text="Home"
         )
         self.home_button.connect("clicked", self.on_home_clicked)
         header_bar.pack_start(self.home_button)
+
         self.back_button = Gtk.Button(icon_name="go-previous-symbolic")
         self.back_button.set_sensitive(False)
         self.back_button.connect("clicked", self.on_back_clicked)
         header_bar.pack_start(self.back_button)
+
         self.forward_button = Gtk.Button(icon_name="go-next-symbolic")
         self.forward_button.set_sensitive(False)
         self.forward_button.connect("clicked", self.on_forward_clicked)
         header_bar.pack_start(self.forward_button)
+
         new_tab_button = Gtk.Button(
             icon_name="tab-new-symbolic", tooltip_text="New Tab"
         )
         new_tab_button.connect("clicked", self.on_new_tab_clicked)
         header_bar.pack_start(new_tab_button)
+
         self.bookmark_top_btn = Gtk.Button(
             icon_name=BOOKMARK_ICON_OUTLINE, tooltip_text="Bookmark Page"
         )
@@ -1266,7 +1404,6 @@ class WebArchivesWindow(Adw.ApplicationWindow):
         self.bookmark_top_btn.connect("clicked", self.on_top_bookmark_clicked)
         header_bar.pack_start(self.bookmark_top_btn)
 
-        # Options Popover Configured with autohide=True to dismiss with Esc
         self.zim_popover = Gtk.Popover(autohide=True)
         self.zim_menu_button = Gtk.MenuButton(
             icon_name="view-more-symbolic",
@@ -1275,14 +1412,19 @@ class WebArchivesWindow(Adw.ApplicationWindow):
         )
         self.zim_menu_button.set_visible(False)
         header_bar.pack_end(self.zim_menu_button)
+
         self._build_options_menu()
+
         self.tab_view = Adw.TabView()
         self.tab_view.set_vexpand(True)
+
         self.tab_bar = Adw.TabBar()
         self.tab_bar.set_view(self.tab_view)
         self.tab_bar.set_autohide(True)
+
         main_box.append(self.tab_bar)
         main_box.append(self.tab_view)
+
         self.tab_view.connect("notify::selected-page", self.on_selected_page_changed)
         self.add_new_tab()
 
@@ -1295,22 +1437,29 @@ class WebArchivesWindow(Adw.ApplicationWindow):
             margin_start=8,
             margin_end=8,
         )
+
         zoom_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         zoom_box.add_css_class("linked")
+
         btn_out = Gtk.Button(label="−")
         self.lbl_zoom = Gtk.Label(label="100%")
         self.lbl_zoom.set_size_request(60, -1)
         btn_in = Gtk.Button(label="+")
+
         btn_reset = Gtk.Button()
         btn_reset.set_child(self.lbl_zoom)
+
         btn_out.connect("clicked", lambda *_: self.on_zoom_out(None, None))
         btn_in.connect("clicked", lambda *_: self.on_zoom_in(None, None))
         btn_reset.connect("clicked", lambda *_: self.on_zoom_reset(None, None))
+
         zoom_box.append(btn_out)
         zoom_box.append(btn_reset)
         zoom_box.append(btn_in)
         popover_box.append(zoom_box)
+
         popover_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
         btn_find_in_page = Gtk.Button(label="Find in page...", has_frame=False)
         if btn_find_in_page.get_child() and isinstance(btn_find_in_page.get_child(), Gtk.Label):
             btn_find_in_page.get_child().set_xalign(0)
@@ -1321,17 +1470,25 @@ class WebArchivesWindow(Adw.ApplicationWindow):
                 self.show_find_in_page(),
             ),
         )
+
         btn_print = Gtk.Button(label="Print", has_frame=False)
         if btn_print.get_child() and isinstance(btn_print.get_child(), Gtk.Label):
             btn_print.get_child().set_xalign(0)
-        btn_print.connect("clicked", lambda *_: (self.zim_popover.popdown(), self.on_print_page(None, None)))
+        btn_print.connect(
+            "clicked", lambda *_: (self.zim_popover.popdown(), self.on_print_page(None, None))
+        )
+
         popover_box.append(btn_find_in_page)
         popover_box.append(btn_print)
         popover_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
         btn_main = Gtk.Button(label="Main page", has_frame=False)
         if btn_main.get_child() and isinstance(btn_main.get_child(), Gtk.Label):
             btn_main.get_child().set_xalign(0)
-        btn_main.connect("clicked", lambda *_: (self.zim_popover.popdown(), self.on_go_main_page(None, None)))
+        btn_main.connect(
+            "clicked", lambda *_: (self.zim_popover.popdown(), self.on_go_main_page(None, None))
+        )
+
         popover_box.append(btn_main)
         self.zim_popover.set_child(popover_box)
 
@@ -1368,11 +1525,14 @@ class WebArchivesWindow(Adw.ApplicationWindow):
             new_page = self.tab_view.insert(new_child, position)
         else:
             new_page = self.tab_view.append(new_child)
+
         new_page.set_title(title)
         new_page.set_icon(icon)
         self.tab_view.set_selected_page(new_page)
+
         if old_page is not None:
             self.tab_view.close_page(old_page)
+
         return new_page
 
     def on_home_clicked(self, button):
@@ -1400,6 +1560,7 @@ class WebArchivesWindow(Adw.ApplicationWindow):
             if existing_tab:
                 self.tab_view.set_selected_page(existing_tab)
                 return
+
         current_zim_page = self._current_zim_page()
         if not new_tab and current_zim_page and current_zim_page.zim_path == zim_path:
             if target_uri:
@@ -1407,8 +1568,10 @@ class WebArchivesWindow(Adw.ApplicationWindow):
             else:
                 current_zim_page.webview.load_uri(f"zim://{current_zim_page.archive_id}/")
             return
+
         zim_page = ZimPageView(zim_path, window_ref=self, target_uri=target_uri)
         icon = zim_page.icon or Gio.ThemedIcon.new("book-open-symbolic")
+
         if new_tab:
             page = self.tab_view.append(zim_page)
             page.set_title(zim_page.title)
@@ -1416,51 +1579,64 @@ class WebArchivesWindow(Adw.ApplicationWindow):
             self.tab_view.set_selected_page(page)
         else:
             page = self._replace_current_tab(zim_page, zim_page.title, icon)
+
         webview = getattr(zim_page, "webview", None)
         if webview is not None:
             webview.connect("notify::title", self._on_zim_title_changed, page, zim_page)
             webview.connect("notify::uri", lambda *_: self._update_top_bookmark_button())
             webview.connect("load-changed", self._on_zim_load_changed, zim_page)
             webview.connect("decide-policy", self._on_decide_policy, zim_page)
+
         self._update_top_bookmark_button()
 
     def on_history_clicked(self, home_page, zim_path):
         title, _ = get_zim_archive_metadata(zim_path)
+
         dialog = Adw.Dialog()
         dialog.set_content_width(450)
         dialog.set_content_height(400)
+
         toolbar_view = Adw.ToolbarView()
         header_bar = Adw.HeaderBar()
         header_bar.set_title_widget(Adw.WindowTitle(title="History", subtitle=title))
         toolbar_view.add_top_bar(header_bar)
+
         clear_btn = Gtk.Button(icon_name="user-trash-symbolic")
         clear_btn.add_css_class("flat")
         clear_btn.set_tooltip_text("Clear All History")
         header_bar.pack_end(clear_btn)
+
         stack = Gtk.Stack()
         stack.set_vexpand(True)
+
         empty_status = Adw.StatusPage(
             title="No History",
             description="Pages you visit in this archive will appear here.",
             icon_name="document-open-recent-symbolic",
         )
         stack.add_named(empty_status, "empty")
+
         scroll = Gtk.ScrolledWindow()
         clamp = Adw.Clamp(margin_top=16, margin_bottom=16, margin_start=16, margin_end=16)
         group = Adw.PreferencesGroup(title="Recently Visited")
         clamp.set_child(group)
         scroll.set_child(clamp)
+
         stack.add_named(scroll, "list")
+
         row_map = {}
+
         def refresh_visibility():
             clear_btn.set_visible(bool(row_map))
             stack.set_visible_child_name("list" if row_map else "empty")
+
         def remove_row(uri):
             remove_history_entry(zim_path, uri)
             row = row_map.pop(uri, None)
             if row is not None:
                 group.remove(row)
             refresh_visibility()
+
         def add_row(uri, page_title):
             row = Adw.ActionRow(title=page_title)
             row.add_prefix(Gtk.Image.new_from_icon_name("document-open-recent-symbolic"))
@@ -1469,57 +1645,73 @@ class WebArchivesWindow(Adw.ApplicationWindow):
                 "activated",
                 lambda r, u=uri: (
                     dialog.close(),
-                    self.on_open_zim_file(None, zim_path, target_uri=u)
+                    self.on_open_zim_file(None, zim_path, target_uri=u),
                 ),
             )
+
             delete_btn = Gtk.Button(icon_name="user-trash-symbolic")
             delete_btn.add_css_class("flat")
             delete_btn.set_valign(Gtk.Align.CENTER)
             delete_btn.set_tooltip_text("Remove")
             delete_btn.connect("clicked", lambda b, u=uri: remove_row(u))
+
             row.add_suffix(delete_btn)
             group.add(row)
             row_map[uri] = row
+
         for uri, page_title in get_history(zim_path):
             add_row(uri, page_title)
+
         refresh_visibility()
+
         def on_clear_clicked(btn):
             clear_history(zim_path)
             for row in list(row_map.values()):
                 group.remove(row)
             row_map.clear()
             refresh_visibility()
+
         clear_btn.connect("clicked", on_clear_clicked)
+
         toolbar_view.set_content(stack)
         dialog.set_child(toolbar_view)
         dialog.present(self)
 
     def on_bookmarks_clicked(self, home_page, zim_path):
         title, _ = get_zim_archive_metadata(zim_path)
+
         dialog = Adw.Dialog()
         dialog.set_content_width(450)
         dialog.set_content_height(400)
+
         toolbar_view = Adw.ToolbarView()
         header_bar = Adw.HeaderBar()
         header_bar.set_title_widget(Adw.WindowTitle(title="Bookmarks", subtitle=title))
         toolbar_view.add_top_bar(header_bar)
+
         stack = Gtk.Stack()
         stack.set_vexpand(True)
+
         empty_status = Adw.StatusPage(
             title="No Bookmarks",
             description="Click the bookmark icon in the top bar while reading to save pages here.",
             icon_name=BOOKMARK_ICON_OUTLINE,
         )
         stack.add_named(empty_status, "empty")
+
         scroll = Gtk.ScrolledWindow()
         clamp = Adw.Clamp(margin_top=16, margin_bottom=16, margin_start=16, margin_end=16)
         group = Adw.PreferencesGroup(title="Saved Pages")
         clamp.set_child(group)
         scroll.set_child(clamp)
+
         stack.add_named(scroll, "list")
+
         row_map = {}
+
         def refresh_visibility():
             stack.set_visible_child_name("list" if row_map else "empty")
+
         def remove_row(uri):
             toggle_bookmark(zim_path, uri, "")
             row = row_map.pop(uri, None)
@@ -1527,6 +1719,7 @@ class WebArchivesWindow(Adw.ApplicationWindow):
                 group.remove(row)
             refresh_visibility()
             self._update_top_bookmark_button()
+
         for uri, page_title in get_bookmarks(zim_path).items():
             row = Adw.ActionRow(title=page_title)
             row.add_prefix(Gtk.Image.new_from_icon_name(BOOKMARK_ICON_FILLED))
@@ -1535,24 +1728,29 @@ class WebArchivesWindow(Adw.ApplicationWindow):
                 "activated",
                 lambda r, u=uri: (
                     dialog.close(),
-                    self.on_open_zim_file(None, zim_path, target_uri=u)
+                    self.on_open_zim_file(None, zim_path, target_uri=u),
                 ),
             )
+
             delete_btn = Gtk.Button(icon_name="user-trash-symbolic")
             delete_btn.add_css_class("flat")
             delete_btn.set_valign(Gtk.Align.CENTER)
             delete_btn.set_tooltip_text("Remove Bookmark")
             delete_btn.connect("clicked", lambda b, u=uri: remove_row(u))
+
             row.add_suffix(delete_btn)
             group.add(row)
             row_map[uri] = row
+
         refresh_visibility()
+
         toolbar_view.set_content(stack)
         dialog.set_child(toolbar_view)
         dialog.present(self)
 
     def on_search_clicked(self, home_page, zim_path):
         archive_title, _ = get_zim_archive_metadata(zim_path)
+
         try:
             archive_id, archive = register_zim_archive(zim_path)
         except Exception as exc:
@@ -1566,19 +1764,25 @@ class WebArchivesWindow(Adw.ApplicationWindow):
             error_header.set_title_widget(Adw.WindowTitle(title="Search Articles"))
             error_toolbar.add_top_bar(error_header)
             error_toolbar.set_content(status)
+
             error_dialog = Adw.Dialog()
             error_dialog.set_content_width(400)
             error_dialog.set_content_height(280)
             error_dialog.set_child(error_toolbar)
             error_dialog.present(self)
             return
+
         dialog = Adw.Dialog()
         dialog.set_content_width(480)
         dialog.set_content_height(560)
+
         toolbar_view = Adw.ToolbarView()
         header_bar = Adw.HeaderBar()
-        header_bar.set_title_widget(Adw.WindowTitle(title="Search Articles", subtitle=archive_title))
+        header_bar.set_title_widget(
+            Adw.WindowTitle(title="Search Articles", subtitle=archive_title)
+        )
         toolbar_view.add_top_bar(header_bar)
+
         content_box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
             spacing=12,
@@ -1587,37 +1791,48 @@ class WebArchivesWindow(Adw.ApplicationWindow):
             margin_start=12,
             margin_end=12,
         )
+
         search_entry = Gtk.SearchEntry()
         search_entry.set_placeholder_text("Search articles in archive…")
         content_box.append(search_entry)
+
         stack = Gtk.Stack()
         stack.set_vexpand(True)
         content_box.append(stack)
+
         prompt_status = Adw.StatusPage(
             title="Search this Archive",
             description="Type to search article titles and text.",
             icon_name="system-search-symbolic",
         )
         stack.add_named(prompt_status, "prompt")
+
         results_scroll = Gtk.ScrolledWindow()
         results_scroll.set_vexpand(True)
+
         results_clamp = Adw.Clamp()
         results_group = Adw.PreferencesGroup(title="Results")
         results_clamp.set_child(results_group)
         results_scroll.set_child(results_clamp)
+
         stack.add_named(results_scroll, "results")
+
         stack.set_visible_child_name("prompt")
         result_rows = []
+
         def clear_results():
             for row in result_rows:
                 results_group.remove(row)
             result_rows.clear()
+
         def run_search(*_args):
             query_text = search_entry.get_text().strip()
             clear_results()
+
             if not query_text:
                 stack.set_visible_child_name("prompt")
                 return
+
             paths = []
             try:
                 searcher = Searcher(archive)
@@ -1632,21 +1847,25 @@ class WebArchivesWindow(Adw.ApplicationWindow):
                     paths = list(search.getResults(0, match_count))
             except Exception:
                 paths = []
+
             if not paths:
                 stack.set_visible_child_name("prompt")
                 prompt_status.set_title("No Results")
                 prompt_status.set_description(f"No articles matched “{query_text}”.")
                 prompt_status.set_icon_name("edit-find-symbolic")
                 return
+
             for path in paths:
                 try:
                     entry = archive.get_entry_by_path(path)
                     entry_title = entry.title or path
                 except Exception:
                     entry_title = path
+
                 row = Adw.ActionRow(title=entry_title)
                 row.add_prefix(Gtk.Image.new_from_icon_name("text-x-generic-symbolic"))
                 row.set_activatable(True)
+
                 target = f"zim://{archive_id}/{path}"
                 row.connect(
                     "activated",
@@ -1655,11 +1874,15 @@ class WebArchivesWindow(Adw.ApplicationWindow):
                         self.on_open_zim_file(None, zim_path, target_uri=u),
                     ),
                 )
+
                 results_group.add(row)
                 result_rows.append(row)
+
             stack.set_visible_child_name("results")
+
         search_entry.connect("search-changed", run_search)
         search_entry.connect("activate", run_search)
+
         toolbar_view.set_content(content_box)
         dialog.set_child(toolbar_view)
         dialog.present(self)
@@ -1692,12 +1915,14 @@ class WebArchivesWindow(Adw.ApplicationWindow):
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("open", "Open Browser")
         dialog.set_response_appearance("open", Adw.ResponseAppearance.SUGGESTED)
+
         def on_response(dlg, response_id):
             if response_id == "open":
                 try:
                     Gtk.show_uri(self, target_uri, Gdk.CURRENT_TIME)
                 except Exception as e:
                     print(f"Failed to launch default browser: {e}")
+
         dialog.connect("response", on_response)
         dialog.present()
 
@@ -1753,6 +1978,7 @@ class WebArchivesWindow(Adw.ApplicationWindow):
                 continue
             if child.zim_path != zim_path:
                 continue
+
             webview = getattr(child, "webview", None)
             current_uri = webview.get_uri() if webview else None
             if current_uri and _zim_uri_entry_path(current_uri) == entry_path:
@@ -1781,8 +2007,10 @@ class WebArchivesWindow(Adw.ApplicationWindow):
             self.bookmark_top_btn.set_visible(False)
             self.zim_menu_button.set_visible(False)
             return
+
         self.bookmark_top_btn.set_visible(True)
         self.zim_menu_button.set_visible(True)
+
         webview = zim_page.webview
         uri = webview.get_uri() if webview else None
         if uri and is_bookmarked(zim_page.zim_path, uri):
@@ -1796,6 +2024,7 @@ class WebArchivesWindow(Adw.ApplicationWindow):
         zim_page = self._current_zim_page()
         if not zim_page or not zim_page.webview:
             return
+
         uri = zim_page.webview.get_uri()
         title = zim_page.webview.get_title() or uri
         if uri:
@@ -1806,12 +2035,15 @@ class WebArchivesWindow(Adw.ApplicationWindow):
         page = self.tab_view.get_selected_page()
         child = page.get_child() if page else None
         is_home = isinstance(child, HomePageView)
+
         self.home_button.set_sensitive(not is_home)
+
         webview = self._current_webview()
         if webview is None:
             self.back_button.set_sensitive(False)
             self.forward_button.set_sensitive(False)
             return
+
         self.back_button.set_sensitive(webview.can_go_back())
         self.forward_button.set_sensitive(webview.can_go_forward())
 
@@ -1855,6 +2087,7 @@ class WebArchivesWindow(Adw.ApplicationWindow):
         if zim_page is not None and zim_page.archive_id:
             zim_page.webview.load_uri(f"zim://{zim_page.archive_id}/")
 
+
 class WebArchivesApp(Adw.Application):
     def __init__(self):
         super().__init__(
@@ -1872,6 +2105,7 @@ class WebArchivesApp(Adw.Application):
         Adw.Application.do_startup(self)
         load_persisted_state()
         setup_zim_uri_scheme()
+
         self.create_action("new-tab", self.on_new_tab, ["<Ctrl>t"])
         self.create_action("quit", self.on_quit, ["<Ctrl>q"])
         self.create_action("close-tab", self.on_close_tab, ["<Ctrl>w"])
@@ -1907,10 +2141,12 @@ class WebArchivesApp(Adw.Application):
         if win:
             win.show_find_in_page()
 
+
 def main(version=None):
     app = WebArchivesApp()
     sys.argv[0] = str(Path(sys.argv[0]).resolve())
     return app.run(sys.argv)
+
 
 if __name__ == "__main__":
     sys.exit(main())
