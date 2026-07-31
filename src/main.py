@@ -1,7 +1,10 @@
+import json
 import os
 import sys
 import threading
+import time
 import uuid
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -12,7 +15,6 @@ gi.require_version("Adw", "1")
 gi.require_version("WebKit", "6.0")
 gi.require_version("Pango", "1.0")
 from gi.repository import Gtk, Adw, Gio, GLib, GObject, Pango, WebKit, Gdk
-
 icon_theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
 icon_theme.add_resource_path("/io/github/mhdev_89/WebArchive")
 
@@ -28,6 +30,55 @@ HISTORY = {}
 HISTORY_MAX_ENTRIES = 100
 _ZIM_SCAN_CACHE = {"scanned": False, "files": []}
 
+# Under Flatpak this resolves to the app's own sandboxed data directory
+# (~/.var/app/io.github.mhdev_89.WebArchive/data), which is where anything
+# the app should "remember" across launches belongs. Outside Flatpak it
+# falls back to XDG_DATA_HOME, so a subfolder keeps it from mixing with
+# other apps' files.
+_APP_DATA_DIR = Path(GLib.get_user_data_dir()) / "io.github.mhdev_89.WebArchive"
+_APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+STATE_FILE = _APP_DATA_DIR / "library-state.json"
+_save_state = {"scheduled": False}
+
+def load_persisted_state():
+    """Load bookmarks and history saved from a previous run, if any."""
+    if not STATE_FILE.exists():
+        return
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        BOOKMARKS.update(payload.get("bookmarks", {}))
+        for zim_path, entries in payload.get("history", {}).items():
+            HISTORY[zim_path] = [(u, t) for u, t in entries]
+    except (OSError, json.JSONDecodeError, ValueError) as e:
+        print(f"Could not load saved library state: {e}")
+
+def _write_persisted_state():
+    try:
+        payload = {
+            "bookmarks": BOOKMARKS,
+            "history": {zp: [[u, t] for u, t in entries] for zp, entries in HISTORY.items()},
+        }
+        tmp_file = STATE_FILE.with_suffix(".json.tmp")
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(tmp_file, STATE_FILE)
+    except OSError as e:
+        print(f"Could not save library state: {e}")
+
+def schedule_state_save():
+    """Debounce saves so rapid bookmark/history changes don't hit disk repeatedly."""
+    if _save_state["scheduled"]:
+        return
+    _save_state["scheduled"] = True
+
+    def _do_save():
+        _save_state["scheduled"] = False
+        _write_persisted_state()
+        return False
+
+    GLib.timeout_add(500, _do_save)
+
 try:
     from libzim.reader import Archive
     from libzim.search import Query, Searcher
@@ -42,9 +93,11 @@ def toggle_bookmark(zim_path, uri, title):
         BOOKMARKS[zim_path] = {}
     if uri in BOOKMARKS[zim_path]:
         del BOOKMARKS[zim_path][uri]
+        schedule_state_save()
         return False
     else:
         BOOKMARKS[zim_path][uri] = title or uri
+        schedule_state_save()
         return True
 
 def get_bookmarks(zim_path):
@@ -57,6 +110,7 @@ def add_history_entry(zim_path, uri, title):
     entries[:] = [(u, t) for (u, t) in entries if u != uri]
     entries.insert(0, (uri, title or uri))
     del entries[HISTORY_MAX_ENTRIES:]
+    schedule_state_save()
 
 def update_history_title(zim_path, uri, title):
     entries = HISTORY.get(zim_path)
@@ -65,18 +119,21 @@ def update_history_title(zim_path, uri, title):
     for i, (u, _t) in enumerate(entries):
         if u == uri:
             entries[i] = (u, title)
+            schedule_state_save()
             break
 
 def remove_history_entry(zim_path, uri):
     entries = HISTORY.get(zim_path)
     if entries:
         entries[:] = [(u, t) for (u, t) in entries if u != uri]
+        schedule_state_save()
 
 def get_history(zim_path):
     return HISTORY.get(zim_path, [])
 
 def clear_history(zim_path):
     HISTORY[zim_path] = []
+    schedule_state_save()
 
 KIWIX_LIBRARY_BASE = "https://library.kiwix.org"
 KIWIX_ENTRIES_ENDPOINT = f"{KIWIX_LIBRARY_BASE}/catalog/v2/entries"
@@ -346,6 +403,28 @@ class KiwixLibraryDialog(Adw.Dialog):
             self.flow_box.append(self._build_result_card(entry))
         self.stack.set_visible_child_name("results")
 
+    def _show_error_popup(self, title, message):
+        status = Adw.StatusPage(
+            title=title,
+            description=message,
+            icon_name="dialog-error-symbolic",
+        )
+        status.set_vexpand(True)
+        header = Adw.HeaderBar()
+        header.set_show_end_title_buttons(False)
+        ok_button = Gtk.Button(label="OK")
+        ok_button.add_css_class("suggested-action")
+        header.pack_end(ok_button)
+        toolbar_view = Adw.ToolbarView()
+        toolbar_view.add_top_bar(header)
+        toolbar_view.set_content(status)
+        error_dialog = Adw.Dialog()
+        error_dialog.set_content_width(420)
+        error_dialog.set_content_height(280)
+        error_dialog.set_child(toolbar_view)
+        ok_button.connect("clicked", lambda b: error_dialog.close())
+        error_dialog.present(self)
+
     def _build_result_card(self, entry):
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         card.add_css_class("card")
@@ -411,63 +490,128 @@ class KiwixLibraryDialog(Adw.Dialog):
             progress_bar.set_visible(False)
             inner.append(progress_bar)
 
-            if target_path.exists():
+            # A file may exist on disk but be a leftover from a failed/interrupted
+            # download, so don't just trust its presence — verify its size against
+            # what the catalog says it should be before treating it as complete.
+            expected_size = entry.get("size_bytes")
+            existing_is_complete = target_path.exists() and (
+                not expected_size or target_path.stat().st_size == expected_size
+            )
+
+            if existing_is_complete:
                 download_btn = Gtk.Button(icon_name="checkbox-checked-symbolic")
                 download_btn.add_css_class("flat")
                 download_btn.set_sensitive(False)
                 download_btn.set_tooltip_text("Already downloaded")
                 footer_row.append(download_btn)
             else:
+                is_redownload = target_path.exists()
                 download_btn = Gtk.Button(icon_name="folder-download-symbolic")
                 download_btn.add_css_class("flat")
-                download_btn.set_tooltip_text(f"Download to {RECOMMENDED_ZIM_DIR}")
+                download_btn.set_tooltip_text(
+                    "Incomplete download found — click to retry"
+                    if is_redownload
+                    else f"Download to {RECOMMENDED_ZIM_DIR}"
+                )
 
                 def trigger_download(btn, url):
                     btn.set_sensitive(False)
+                    btn.set_tooltip_text("Connecting…")
                     progress_bar.set_visible(True)
                     progress_bar.set_fraction(0.0)
+                    progress_bar.set_text("Connecting…")
+
+                    # DNS lookup + TCP/TLS handshake + waiting on response headers can
+                    # take a few seconds before any bytes arrive. Pulse immediately so
+                    # the button doesn't look stuck during that gap; real progress
+                    # updates take over (and stop this) once transfer actually starts.
+                    pulse_state = {
+                        "source_id": GLib.timeout_add(100, lambda: progress_bar.pulse() is None)
+                    }
+
+                    def stop_connecting_pulse():
+                        if pulse_state["source_id"] is not None:
+                            GLib.source_remove(pulse_state["source_id"])
+                            pulse_state["source_id"] = None
+                        return False
 
                     def update_progress(downloaded, total):
+                        stop_connecting_pulse()
                         if total > 0:
-                            fraction = downloaded / total
+                            fraction = min(downloaded / total, 1.0)
                             progress_bar.set_fraction(fraction)
                             progress_bar.set_text(f"{int(fraction * 100)}%")
                         else:
                             progress_bar.pulse()
+                        return False
 
                     def download_finished(success, message=""):
+                        stop_connecting_pulse()
                         if success:
                             progress_bar.set_fraction(1.0)
                             progress_bar.set_text("Downloaded")
                             btn.set_icon_name("checkbox-checked-symbolic")
                             btn.set_tooltip_text("Already downloaded")
+                            invalidate_zim_scan_cache()
                         else:
-                            progress_bar.set_text("Failed")
+                            progress_bar.set_text("Failed — click to retry")
                             btn.set_sensitive(True)
-                            print(f"Download failed: {message}")
+                            btn.set_tooltip_text(f"Download failed: {message}")
+                            print(f"Download failed for {url}: {message}")
+                            self._show_error_popup(
+                                "Download Failed",
+                                f"Couldn't download \"{entry.get('title', 'this file')}\".\n\n{message}",
+                            )
+                        return False
 
                     def download_worker():
+                        tmp_path = target_path.with_suffix(target_path.suffix + ".part")
                         try:
                             req = urllib.request.Request(
                                 url, headers={"User-Agent": "WebArchivesGtk/1.0"}
                             )
-                            with urllib.request.urlopen(req) as resp, open(target_path, "wb") as f:
+                            # timeout guards against a stalled connection hanging
+                            # forever with no progress and no error ever reported.
+                            with urllib.request.urlopen(req, timeout=30) as resp:
+                                # Headers are in — the slow "connecting" part is done,
+                                # so switch off the indeterminate pulse in favor of
+                                # real progress.
+                                GLib.idle_add(stop_connecting_pulse)
                                 total_size = resp.headers.get("Content-Length")
                                 total_size = int(total_size) if total_size else entry.get("size_bytes") or 0
                                 downloaded = 0
-                                block_size = 8192
+                                block_size = 262144  # 256 KB
+                                last_ui_update = 0.0
 
-                                while True:
-                                    buffer = resp.read(block_size)
-                                    if not buffer:
-                                        break
-                                    downloaded += len(buffer)
-                                    f.write(buffer)
-                                    GLib.idle_add(update_progress, downloaded, total_size)
+                                with open(tmp_path, "wb") as f:
+                                    while True:
+                                        buffer = resp.read(block_size)
+                                        if not buffer:
+                                            break
+                                        downloaded += len(buffer)
+                                        f.write(buffer)
+                                        # Throttle UI updates (~5/sec) instead of firing
+                                        # idle_add on every chunk, which can flood the
+                                        # main loop on multi-GB files.
+                                        now = time.monotonic()
+                                        if now - last_ui_update > 0.2:
+                                            last_ui_update = now
+                                            GLib.idle_add(update_progress, downloaded, total_size)
 
+                            if total_size and downloaded != total_size:
+                                raise IOError(
+                                    f"Incomplete download: got {downloaded} of {total_size} bytes"
+                                )
+
+                            os.replace(tmp_path, target_path)
+                            GLib.idle_add(update_progress, downloaded, downloaded or total_size)
                             GLib.idle_add(download_finished, True)
                         except Exception as e:
-                            GLib.idle_add(download_finished, False, str(e))
+                            try:
+                                tmp_path.unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                            GLib.idle_add(download_finished, False, _describe_download_error(e))
 
                     threading.Thread(target=download_worker, daemon=True).start()
 
@@ -656,6 +800,27 @@ def find_user_home_directories():
             home_paths.add(user_dir)
             home_paths.add(user_dir.resolve())
     return list(home_paths)
+
+def _describe_download_error(exc):
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"Server returned an error (HTTP {exc.code} {exc.reason})."
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
+            return "The connection timed out. Check your internet connection and try again."
+        return f"Couldn't reach the server ({reason}). Check your internet connection."
+    if isinstance(exc, TimeoutError):
+        return "The connection timed out. Check your internet connection and try again."
+    if isinstance(exc, PermissionError):
+        return f"Permission denied writing to {RECOMMENDED_ZIM_DIR}."
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) == 28:
+        return "Not enough free disk space to finish this download."
+    if isinstance(exc, OSError):
+        return f"A file system error occurred: {exc}"
+    return str(exc)
+
+def invalidate_zim_scan_cache():
+    _ZIM_SCAN_CACHE["scanned"] = False
 
 def scan_for_zim_files_background(callback, force=False):
     if _ZIM_SCAN_CACHE["scanned"] and not force:
@@ -1728,6 +1893,7 @@ class WebArchivesApp(Adw.Application):
 
     def do_startup(self):
         Adw.Application.do_startup(self)
+        load_persisted_state()
         setup_zim_uri_scheme()
         self.create_action("new-tab", self.on_new_tab, ["<Ctrl>t"])
         self.create_action("quit", self.on_quit, ["<Ctrl>q"])
@@ -1748,6 +1914,11 @@ class WebArchivesApp(Adw.Application):
 
     def on_quit(self, action, param):
         self.quit()
+
+    def do_shutdown(self):
+        if _save_state["scheduled"]:
+            _write_persisted_state()
+        Adw.Application.do_shutdown(self)
 
     def on_close_tab(self, action, param):
         win = self.get_active_window()
