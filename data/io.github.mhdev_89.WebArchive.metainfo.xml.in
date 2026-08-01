@@ -47,14 +47,14 @@
   </screenshots>
 
   <releases>
-    <release version="1.0.0" date="2026-07-30">
-      <description translate="no">
-        <p>Initial release.</p>
-      </description>
-    </release>
     <release version="1.1.0" date="2026-07-31">
       <description translate="no">
         <p>Force the app to check only the ZIMs folder instead of HOME.</p>
+      </description>
+    </release>
+    <release version="1.0.0" date="2026-07-30">
+      <description translate="no">
+        <p>Initial release.</p>
       </description>
     </release>
   </releases>
